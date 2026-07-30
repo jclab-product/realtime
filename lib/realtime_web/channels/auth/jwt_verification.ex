@@ -38,6 +38,10 @@ defmodule RealtimeWeb.JwtVerification do
   @rs_algorithms ["RS256", "RS384", "RS512"]
   @es_algorithms ["ES256", "ES384", "ES512"]
   @ed_algorithms ["Ed25519", "Ed448"]
+  # RFC 8037 always sets alg to EdDSA and carries the curve in the JWK, while
+  # JOSE (and Joken) name the signer after the curve itself. Tokens minted by
+  # RFC-conformant libraries therefore arrive with this spelling.
+  @eddsa_algorithm "EdDSA"
 
   @doc """
   Verify JWT token and validate claims
@@ -113,14 +117,20 @@ defmodule RealtimeWeb.JwtVerification do
   end
 
   defp generate_signer(%{"alg" => alg, "kid" => kid}, _jwt_secret, %{"keys" => keys})
-       when is_binary(kid) and alg in @ed_algorithms do
+       when is_binary(kid) and (alg in @ed_algorithms or alg == @eddsa_algorithm) do
     jwk = Enum.find(keys, fn jwk -> jwk["kty"] == "OKP" and jwk["kid"] == kid end)
 
-    case jwk do
+    case ed_signer_alg(alg, jwk) do
       nil -> {:error, {:error_generating_signer, kid}}
-      _ -> {:ok, Joken.Signer.create(alg, jwk)}
+      signer_alg -> {:ok, Joken.Signer.create(signer_alg, jwk)}
     end
   end
+
+  # The signer is named after the curve, which an EdDSA header leaves to the JWK.
+  defp ed_signer_alg(_alg, nil), do: nil
+  defp ed_signer_alg(@eddsa_algorithm, %{"crv" => crv}) when crv in @ed_algorithms, do: crv
+  defp ed_signer_alg(@eddsa_algorithm, _jwk), do: nil
+  defp ed_signer_alg(alg, _jwk), do: alg
 
   # Most Supabase Auth JWTs fall in this case, as they're usually signed with
   # HS256, have a kid header, but there's no JWK as this is sensitive. In this
